@@ -1,0 +1,39 @@
+// Builds fake server lists and runs the collector over several "hours".
+import { writeFileSync, readFileSync, copyFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { gunzipSync } from "node:zlib";
+import { encodeServer } from "../collector/proto.mjs";
+import { histKey } from "../collector/keys.mjs";
+
+const common = ["mapmanager", "chat", "spawnmanager", "oxmysql", "ox_lib", "es_extended", "qb-core"];
+function fakeStream(seed) {
+  const frames = [];
+  for (let i = 0; i < 3000; i++) {
+    const res = common.filter((_, j) => (i + j + seed) % (j + 2) === 0);
+    if (i % 10 === 0) res.push("casino", "Casino");          // duplicate + case test
+    if (i % 997 === 0) res.push("rare_script_" + i);
+    frames.push(encodeServer("srv" + (i % 2990), (i * 7 + seed) % 64, res)); // 10 duplicate endpoints
+  }
+  return Buffer.concat(frames);
+}
+const times = ["2026-11-23T22:05:00Z", "2026-11-23T22:40:00Z", "2026-11-23T23:05:00Z", "2026-11-24T00:05:00Z"];
+times.forEach((t, k) => {
+  writeFileSync("/tmp/stream.bin", fakeStream(k));
+  const env = { ...process.env, STREAM_FILE: "/tmp/stream.bin", NOW: t };
+  if (k) env.STATE_FILE = "/tmp/state.json.gz";
+  execFileSync("node", ["collector/collect.mjs"], { env, stdio: "inherit" });
+  copyFileSync("dist/api/history.json.gz", "/tmp/state.json.gz");
+});
+const st = JSON.parse(gunzipSync(readFileSync("/tmp/state.json.gz")));
+const sum = JSON.parse(readFileSync("dist/api/summary.json"));
+const shard = JSON.parse(readFileSync("dist/api/r/ca.json"));
+const h = JSON.parse(readFileSync("dist/api/h/" + histKey("casino") + ".json"));
+const assert = (c, m) => { if (!c) { console.error("FAIL:", m); process.exit(1); } console.log("ok:", m); };
+assert(st.hours.length === 3, "3 distinct hours (22:05 and 22:40 merged)");
+assert(st.days.length === 2, "2 days");
+assert(sum.servers === 2990, "duplicate endpoints removed");
+assert(shard.r.casino[0] === 299, "casino counted once per server, case-insensitive");
+assert(h.h.casino.length === 6, "casino has 3 hourly points");
+assert(!("rare_script_997" in st.res), "1-server resources get no history");
+assert(JSON.parse(readFileSync("dist/api/r/ra.json")).r.rare_script_997[0] === 1, "but still appear in current data");
+assert(sum.top[0][1] >= sum.top[1][1], "top sorted");

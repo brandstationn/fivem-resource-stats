@@ -1,0 +1,44 @@
+# FiveM Resource Stats
+
+Free, open stats on how many FiveM servers run each resource and how many players are on them, refreshed every hour.
+
+**Site:** https://brandstationn.github.io/fivem-resource-stats/
+**API docs:** https://brandstationn.github.io/fivem-resource-stats/#/api
+
+## How it works
+
+- Every hour a GitHub Action (`.github/workflows/collect.yml`) downloads the public Cfx.re server list.
+  The list includes the resources each server runs.
+- `collector/collect.mjs` counts the servers and players for every resource name. It keeps 7 days of hourly
+  history and 90 days of daily peaks, then writes the static website plus a JSON API into `dist/`.
+- `dist/` is published to GitHub Pages. No server and no database, so it costs nothing.
+  The history is carried from one run to the next in `api/history.json.gz` on the site itself.
+
+## Show your resource's numbers on any website
+
+```html
+<span data-fivem-resource="shattered_casino" data-show="servers"></span> servers ·
+<span data-fivem-resource="shattered_casino" data-show="players"></span> players
+<script src="https://brandstationn.github.io/fivem-resource-stats/embed.js" async></script>
+```
+
+`data-show` can be `servers`, `players` or `rank`.
+
+## Running it locally
+
+```bash
+node test/run-test.mjs        # fake data, checks the counting
+node collector/collect.mjs    # real data -> dist/
+npx serve dist                # look at the site
+```
+
+## Settings
+
+At the top of `collector/collect.mjs`: `HOURS` (hourly history length), `DAYS` (daily history length),
+`MIN_HISTORY` (minimum servers before a resource gets history) and `TOP_N` (size of `top.json`).
+
+## Notes
+
+- Counts only include servers that publish their resource list. Names are the folder names servers use,
+  so a renamed copy shows up under its new name.
+- Not affiliated with Cfx.re.

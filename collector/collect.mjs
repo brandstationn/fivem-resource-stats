@@ -1,0 +1,193 @@
+// Hourly collector: downloads every FiveM server from the Cfx.re list, counts
+// servers + players per resource, updates history, and writes the static
+// site + JSON API into ./dist (published to GitHub Pages).
+//
+// Env:
+//   SITE_URL     public URL of the live site (to load the previous history)
+//   STREAM_FILE  read the server list from a local file instead (tests)
+//   STATE_FILE   read previous history from a local .json.gz file (tests)
+//   NOW          override the current time, ISO string (tests)
+
+import { readFile, writeFile, mkdir, cp, rm } from "node:fs/promises";
+import { gzipSync, gunzipSync } from "node:zlib";
+import { parseStream } from "./proto.mjs";
+import { shardKey, histKey } from "./keys.mjs";
+
+const HOURS = 168;        // hourly points kept (7 days)
+const DAYS = 90;          // daily peak points kept
+const MIN_HISTORY = 3;    // a resource gets history once it runs on this many servers
+const TOP_N = 5000;       // size of api/top.json
+const OUT = "dist";
+const STREAM_URLS = [
+  "https://frontend.cfx-services.net/api/servers/streamRedir/",
+  "https://servers-frontend.fivem.net/api/servers/streamRedir/",
+];
+const UA = "fivem-resource-stats (+https://github.com/brandstationn/fivem-resource-stats)";
+
+const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+
+// ---------- 1. download ----------
+async function downloadStream() {
+  if (process.env.STREAM_FILE) return readFile(process.env.STREAM_FILE);
+  let lastErr;
+  for (const url of STREAM_URLS) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "*/*" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        log(`downloaded ${(buf.length / 1e6).toFixed(1)} MB from ${url}`);
+        return buf;
+      } catch (e) {
+        lastErr = new Error(`${url} attempt ${attempt}: ${e.message}`);
+        console.warn(lastErr.message);
+        await new Promise((r) => setTimeout(r, 5000 * attempt));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+// ---------- 2. aggregate ----------
+function aggregate(buf) {
+  const byName = new Map(); // lowercase name -> [servers, players]
+  const seen = new Set();
+  let servers = 0, players = 0;
+  const { count, bad } = parseStream(buf, (s) => {
+    if (!s.endpoint || seen.has(s.endpoint)) return;
+    seen.add(s.endpoint);
+    servers++; players += s.clients;
+    const unique = new Set();
+    for (const r of s.resources) {
+      const n = r.trim().toLowerCase();
+      if (n && n.length <= 64) unique.add(n);
+    }
+    for (const n of unique) {
+      const e = byName.get(n);
+      if (e) { e[0]++; e[1] += s.clients; } else byName.set(n, [1, s.clients]);
+    }
+  });
+  log(`parsed ${count} servers (${bad} unreadable), ${servers} unique, ${players} players, ${byName.size} resources`);
+  if (servers < 1000 && !process.env.STREAM_FILE) throw new Error(`Only ${servers} servers parsed - refusing to publish`);
+  return { byName, servers, players };
+}
+
+// ---------- 3. history ----------
+async function loadState() {
+  try {
+    let gz;
+    if (process.env.STATE_FILE) gz = await readFile(process.env.STATE_FILE);
+    else if (process.env.SITE_URL) {
+      const res = await fetch(`${process.env.SITE_URL.replace(/\/$/, "")}/api/history.json.gz?t=${Date.now()}`, { headers: { "User-Agent": UA } });
+      if (res.status === 404) { log("no previous history (first run)"); return null; }
+      if (!res.ok) throw new Error(`history download HTTP ${res.status}`);
+      gz = Buffer.from(await res.arrayBuffer());
+    } else return null;
+    const st = JSON.parse(gunzipSync(gz));
+    log(`loaded history: ${st.hours.length} hours, ${Object.keys(st.res).length} tracked resources`);
+    return st;
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    // Never wipe history because of a temporary error: fail the run, the old site stays up.
+    throw new Error(`Could not load previous history: ${e.message}`);
+  }
+}
+
+function updateState(st, agg, nowSec) {
+  st ??= { v: 1, hours: [], totals: [], res: {}, days: [], dtotals: [], dres: {} };
+  const hour = Math.floor(nowSec / 3600) * 3600;
+  const day = new Date(hour * 1000).toISOString().slice(0, 10);
+
+  // --- hourly ---
+  const H = st.hours.length;
+  const sameHour = H && st.hours[H - 1] === hour;
+  if (!sameHour) {
+    st.hours.push(hour); st.totals.push([0, 0]);
+    for (const a of Object.values(st.res)) a.push(0, 0);
+  }
+  for (const [n, [s]] of agg.byName) if (s >= MIN_HISTORY && !st.res[n]) st.res[n] = new Array(st.hours.length * 2).fill(0);
+  const hi = st.hours.length - 1;
+  st.totals[hi] = [agg.servers, agg.players];
+  for (const [n, a] of Object.entries(st.res)) {
+    const cur = agg.byName.get(n) || [0, 0];
+    a[hi * 2] = cur[0]; a[hi * 2 + 1] = cur[1];
+  }
+  while (st.hours.length > HOURS) {
+    st.hours.shift(); st.totals.shift();
+    for (const a of Object.values(st.res)) a.splice(0, 2);
+  }
+  for (const [n, a] of Object.entries(st.res)) if (a.every((x) => x === 0)) delete st.res[n];
+
+  // --- daily (peak of the day) ---
+  if (st.days[st.days.length - 1] !== day) {
+    st.days.push(day); st.dtotals.push([0, 0]);
+    for (const a of Object.values(st.dres)) a.push(0, 0);
+  }
+  for (const n of Object.keys(st.res)) if (!st.dres[n]) st.dres[n] = new Array(st.days.length * 2).fill(0);
+  const di = st.days.length - 1;
+  st.dtotals[di] = [Math.max(st.dtotals[di][0], agg.servers), Math.max(st.dtotals[di][1], agg.players)];
+  for (const [n, a] of Object.entries(st.dres)) {
+    const cur = agg.byName.get(n) || [0, 0];
+    a[di * 2] = Math.max(a[di * 2], cur[0]); a[di * 2 + 1] = Math.max(a[di * 2 + 1], cur[1]);
+  }
+  while (st.days.length > DAYS) {
+    st.days.shift(); st.dtotals.shift();
+    for (const a of Object.values(st.dres)) a.splice(0, 2);
+  }
+  for (const [n, a] of Object.entries(st.dres)) if (a.every((x) => x === 0)) delete st.dres[n];
+  return st;
+}
+
+// ---------- 4. write the API ----------
+async function writeJson(path, obj) { await writeFile(`${OUT}/${path}`, JSON.stringify(obj)); }
+
+async function writeApi(agg, st, now) {
+  const updatedAt = now.toISOString();
+  const ranked = [...agg.byName].sort((a, b) => b[1][0] - a[1][0] || b[1][1] - a[1][1] || (a[0] < b[0] ? -1 : 1));
+  const rank = new Map(ranked.map(([n], i) => [n, i + 1]));
+
+  await mkdir(`${OUT}/api/r`, { recursive: true });
+  await mkdir(`${OUT}/api/h`, { recursive: true });
+
+  await writeJson("api/summary.json", {
+    updatedAt, servers: agg.servers, players: agg.players, resources: agg.byName.size,
+    top: ranked.slice(0, 100).map(([n, [s, p]]) => [n, s, p]),
+    hourly: { t: st.hours, v: st.totals },
+    daily: { d: st.days, v: st.dtotals },
+  });
+  await writeJson("api/top.json", { updatedAt, top: ranked.slice(0, TOP_N).map(([n, [s, p]]) => [n, s, p]) });
+
+  // current numbers for EVERY resource, sharded by the first 2 characters of the name
+  const shards = new Map();
+  for (const [n, [s, p]] of ranked) {
+    const k = shardKey(n);
+    if (!shards.has(k)) shards.set(k, {});
+    shards.get(k)[n] = [s, p, rank.get(n)];
+  }
+  for (const [k, r] of shards) await writeJson(`api/r/${k}.json`, { updatedAt, r });
+
+  // history, bucketed by hash
+  const hshards = new Map();
+  const hs = (k) => { if (!hshards.has(k)) hshards.set(k, { t: st.hours, d: st.days, h: {}, dd: {} }); return hshards.get(k); };
+  for (const [n, a] of Object.entries(st.res)) hs(histKey(n)).h[n] = a;
+  for (const [n, a] of Object.entries(st.dres)) hs(histKey(n)).dd[n] = a;
+  for (const [k, h] of hshards) await writeJson(`api/h/${k}.json`, h);
+
+  // bulk downloads (+ the history file the next run reads back)
+  const all = {}; for (const [n, [s, p]] of ranked) all[n] = [s, p];
+  await writeFile(`${OUT}/api/all.json.gz`, gzipSync(JSON.stringify({ updatedAt, r: all }), { level: 9 }));
+  const stateGz = gzipSync(JSON.stringify(st), { level: 9 });
+  await writeFile(`${OUT}/api/history.json.gz`, stateGz);
+  log(`wrote ${shards.size} shards, ${hshards.size} history files, ${Object.keys(st.res).length} resources with history, history.json.gz ${(stateGz.length / 1e6).toFixed(2)} MB`);
+}
+
+// ---------- main ----------
+const now = process.env.NOW ? new Date(process.env.NOW) : new Date();
+const [buf, prev] = await Promise.all([downloadStream(), loadState()]);
+const agg = aggregate(buf);
+const st = updateState(prev, agg, Math.floor(now / 1000));
+await rm(OUT, { recursive: true, force: true });
+await cp("site", OUT, { recursive: true });
+await writeFile(`${OUT}/.nojekyll`, "");
+await writeApi(agg, st, now);
+log("done");
