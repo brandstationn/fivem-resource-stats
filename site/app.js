@@ -86,7 +86,7 @@ async function home() {
   document.title = "FiveM Resource Stats - servers & players per resource";
   const s = summary;
   view.innerHTML = `${tiles([["Servers online", fmt(s.servers)], ["Players online", fmt(s.players)], ["Different resources", fmt(s.resources)], ["Last update", ago(s.updatedAt)]])}
-    ${s.covered < s.servers * 0.97 ? `<p class="note">Still checking servers: resource lists are known for ${fmt(s.covered)} of ${fmt(s.servers)} servers so far (${Math.round(s.covered / s.servers * 100)}%). The numbers will rise over the next few hours until every server has been checked.</p>` : ""}
+    ${s.covered < s.servers * 0.97 ? `<p class="note">Still checking servers: resource lists are known for ${fmt(s.covered)} of ${fmt(s.servers)} servers so far (${Math.round(s.covered / s.servers * 100)}%). Servers are checked busiest first, so the biggest servers are already counted. The numbers will rise over the next day or so until every server has been checked.</p>` : ""}
     <div id="hist"></div><h2>Most used resources</h2><div id="tbl"></div>`;
   chartPair($("#hist"), { h: fromPairs(s.hourly.t, s.hourly.v), d: fromPairs(s.daily.d, s.daily.v, true) });
   let rows = s.top, page = 0; const per = 50;

@@ -7,7 +7,7 @@ on:
     inputs:
       lookup_minutes:
         description: "Minutes to spend looking up resource lists"
-        default: "30"
+        default: "50"
 
 permissions:
   contents: write   # only used by the keep-alive step
@@ -21,7 +21,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 58
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
@@ -35,7 +35,7 @@ jobs:
       - name: Collect server list and build site + API
         run: node collector/collect.mjs
         env:
-          LOOKUP_MINUTES: ${{ inputs.lookup_minutes || '30' }}
+          LOOKUP_MINUTES: ${{ inputs.lookup_minutes || '50' }}
           SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
 
       - uses: actions/upload-pages-artifact@v3

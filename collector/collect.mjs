@@ -23,8 +23,9 @@ const DAYS = 90;              // daily peak points kept
 const MIN_HISTORY = 3;        // a resource gets history once it runs on this many servers
 const TOP_N = 5000;           // size of api/top.json
 const RECHECK_HOURS = 24;     // each server's resource list is re-checked about this often
-const MAX_RATE = 5;           // max lookups per second to Cfx.re
-const LOOKUP_MINUTES = +process.env.LOOKUP_MINUTES || 30; // stop looking up after this long; the rest continue next hour
+const START_RATE = 0.5;       // lookups per second to Cfx.re; adapts: slower on rate limits, a bit faster while all is fine
+const MAX_RATE = 1;
+const LOOKUP_MINUTES = +process.env.LOOKUP_MINUTES || 50; // stop looking up after this long; the rest continue next hour
 const OUT = "dist";
 const API = "https://frontend.cfx-services.net/api/servers";
 const STREAM_URLS = [`${API}/streamRedir/`, "https://servers-frontend.fivem.net/api/servers/streamRedir/"];
@@ -114,31 +115,31 @@ async function lookupOne(endpoint, server) {
 
 async function refreshCache(cache, servers, nowSec) {
   for (const ep of cache.keys()) if (!servers.has(ep)) cache.delete(ep); // server left the list
+  // Never-checked servers first (busiest first), then the ones checked longest ago.
   const due = [...servers.keys()]
     .filter((ep) => !cache.has(ep) || nowSec - cache.get(ep).at >= RECHECK_HOURS * 3600 - 1800)
-    .sort((a, b) => (cache.get(a)?.at ?? -1) - (cache.get(b)?.at ?? -1)); // never-checked first, then oldest
-  const deadline = Date.now() + LOOKUP_MINUTES * 60e3;
-  let i = 0, ok = 0, failed = 0, rate = MAX_RATE, pausedUntil = 0, limitedCount = 0;
-  const started = Date.now();
-  const worker = async () => {
-    while (i < due.length && Date.now() < deadline && limitedCount < 20) {
-      if (Date.now() < pausedUntil) { await sleep(pausedUntil - Date.now()); continue; }
-      const ep = due[i++];
-      const t0 = Date.now();
-      try {
-        const r = await lookupOne(ep, servers.get(ep));
-        if (r.ok) { cache.set(ep, { at: nowSec, res: r.res }); ok++; }
-        else if (r.limited) { // slow down and pause on rate limiting
-          limitedCount++; rate = Math.max(1, rate / 2); pausedUntil = Date.now() + r.wait; i--;
-          console.warn(`rate limited by Cfx.re, pausing ${r.wait / 1000}s, rate now ${rate}/s`);
-        } else failed++;
-      } catch { failed++; }
-      if (!TEST) await sleep(Math.max(0, 1000 * WORKERS / rate - (Date.now() - t0)));
+    .sort((a, b) => (cache.get(a)?.at ?? -1) - (cache.get(b)?.at ?? -1) || servers.get(b).clients - servers.get(a).clients);
+  const deadline = Date.now() + LOOKUP_MINUTES * 60e3, started = Date.now();
+  let i = 0, ok = 0, failed = 0, limited = 0, rate = START_RATE, streak = 0;
+  // One request at a time. On a 429: wait as told and slow down. After 50 clean lookups: speed up a little.
+  while (i < due.length && Date.now() < deadline) {
+    const ep = due[i], t0 = Date.now();
+    let r;
+    try { r = await lookupOne(ep, servers.get(ep)); } catch { r = { error: "network" }; }
+    if (r.limited) {
+      limited++; streak = 0; rate = Math.max(0.1, rate * 0.7);
+      if (limited <= 3 || limited % 20 === 0) console.warn(`rate limited (${limited}x), waiting ${r.wait / 1000}s, rate now ${rate.toFixed(2)}/s`);
+      await sleep(r.wait);
+      continue; // retry the same server
     }
-  };
-  const WORKERS = TEST ? 1 : 4;
-  await Promise.all(Array.from({ length: WORKERS }, worker));
-  log(`lookups: ${due.length} due, ${ok} updated, ${failed} failed, ${due.length - i} left for next run, ${((Date.now() - started) / 1000).toFixed(0)}s`);
+    i++;
+    if (r.ok) { cache.set(ep, { at: nowSec, res: r.res }); ok++; if (++streak % 50 === 0) rate = Math.min(MAX_RATE, rate * 1.1); }
+    else failed++;
+    if (!TEST) await sleep(Math.max(0, 1000 / rate - (Date.now() - t0)));
+  }
+  const secs = (Date.now() - started) / 1000;
+  log(`lookups: ${due.length} due, ${ok} updated, ${failed} failed, ${limited} rate-limited, ${due.length - i} left for next run, ` +
+      `${secs.toFixed(0)}s (${(ok / Math.max(secs, 1)).toFixed(2)}/s), final rate ${rate.toFixed(2)}/s`);
 }
 
 // ---------- 3. aggregate ----------
