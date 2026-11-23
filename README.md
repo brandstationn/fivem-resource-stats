@@ -1,4 +1,4 @@
-# FiveM Resource Stats
+# FiveM Resource Stats by Claude
 
 Made by **claude**
 
