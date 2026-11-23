@@ -1,7 +1,7 @@
 // Minimal reader for the Cfx.re server-list stream (protobuf, no dependencies).
 // Stream = repeated frames: uint32 little-endian length + `Server` message.
 //   Server     { string EndPoint = 1; ServerData Data = 2; }
-//   ServerData { int32 svMaxclients = 1; int32 clients = 2; string hostname = 4; repeated string resources = 8; ... }
+//   ServerData { int32 svMaxclients = 1; int32 clients = 2; string hostname = 4; repeated string resources = 8; repeated string connectEndPoints = 18; ... }
 
 function varint(buf, pos) {
   let result = 0, mul = 1, b;
@@ -22,7 +22,10 @@ function parseData(buf, pos, end, out) {
     let key; [key, pos] = varint(buf, pos);
     const field = Math.floor(key / 8), wire = key & 7;
     if (field === 2 && wire === 0) { [out.clients, pos] = varint(buf, pos); }
-    else if (field === 8 && wire === 2) {
+    else if (field === 18 && wire === 2) {
+      let len; [len, pos] = varint(buf, pos);
+      out.connect.push(buf.toString("utf8", pos, pos + len)); pos += len;
+    } else if (field === 8 && wire === 2) {
       let len; [len, pos] = varint(buf, pos);
       out.resources.push(buf.toString("utf8", pos, pos + len)); pos += len;
     } else pos = skip(wire, buf, pos);
@@ -30,7 +33,7 @@ function parseData(buf, pos, end, out) {
 }
 
 function parseServer(buf, pos, end) {
-  const s = { endpoint: "", clients: 0, resources: [] };
+  const s = { endpoint: "", clients: 0, resources: [], connect: [] };
   while (pos < end) {
     let key; [key, pos] = varint(buf, pos);
     const field = Math.floor(key / 8), wire = key & 7;
@@ -62,8 +65,8 @@ const enc = {
   str(f, s) { const b = Buffer.from(s); return Buffer.concat([enc.v(f * 8 + 2), enc.v(b.length), b]); },
   int(f, n) { return Buffer.concat([enc.v(f * 8), enc.v(n)]); },
 };
-export function encodeServer(endpoint, clients, resources) {
-  const data = Buffer.concat([enc.int(1, 128), enc.int(2, clients), enc.str(4, "Test server"), ...resources.map((r) => enc.str(8, r))]);
+export function encodeServer(endpoint, clients, resources, connect = []) {
+  const data = Buffer.concat([enc.int(1, 128), enc.int(2, clients), enc.str(4, "Test server"), ...resources.map((r) => enc.str(8, r)), ...connect.map((c) => enc.str(18, c))]);
   const msg = Buffer.concat([enc.str(1, endpoint), enc.v(2 * 8 + 2), enc.v(data.length), data]);
   const head = Buffer.alloc(4); head.writeUInt32LE(msg.length);
   return Buffer.concat([head, msg]);

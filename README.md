@@ -11,7 +11,9 @@ Free, open stats on how many FiveM servers run each resource and how many player
 
 - Every hour a GitHub Action (`.github/workflows/collect.yml`) downloads the public Cfx.re server list
   (every server and its player count).
-- The bulk list doesn't include resource names, so each server's resource list is looked up on Cfx.re
+- The bulk list doesn't include resource names, so each server's resource list is looked up about once a day:
+  first by asking the server itself (`http://ip:port/info.json`, the same file the game reads when you browse
+  servers - one request per server, only to public IP addresses), and for servers that don't answer, on Cfx.re,
   one request at a time. The pace adapts to Cfx.re's rate limit (about 0.5 a second). New servers are
   looked up first, busiest first, and every server is re-checked about once a day. The lists are cached between runs in `api/servers.json.gz`.
 - `collector/collect.mjs` counts the servers and players for every resource name. It keeps 7 days of hourly
