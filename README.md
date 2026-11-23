@@ -1,5 +1,7 @@
 # FiveM Resource Stats
 
+Made with **claude**
+
 Free, open stats on how many FiveM servers run each resource and how many players are on them, refreshed every hour.
 
 **Site:** https://brandstationn.github.io/fivem-resource-stats/
