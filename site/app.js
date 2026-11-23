@@ -83,7 +83,7 @@ function tiles(items) { return `<div class="tiles">${items.map(([l, v]) => `<div
 const resLink = (n) => `<a href="#/r/${encodeURIComponent(n)}">${esc(n)}</a>`;
 
 async function home() {
-  document.title = "FiveM Resource Stats - servers & players per resource";
+  document.title = "resourcestats - FiveM servers & players per resource";
   const s = summary;
   view.innerHTML = `${tiles([["Servers online", fmt(s.servers)], ["Players online", fmt(s.players)], ["Different resources", fmt(s.resources)], ["Last update", ago(s.updatedAt)]])}
     ${s.covered < s.servers * 0.97 ? `<p class="note">Still checking servers: resource lists are known for ${fmt(s.covered)} of ${fmt(s.servers)} servers so far (${Math.round(s.covered / s.servers * 100)}%). Servers are checked busiest first, so the biggest servers are already counted. The numbers will rise over the next day or so until every server has been checked.</p>` : ""}
@@ -106,7 +106,7 @@ async function home() {
 
 async function resource(name) {
   name = name.toLowerCase();
-  document.title = `${name} - FiveM Resource Stats`;
+  document.title = `${name} - resourcestats`;
   view.innerHTML = `<h1>${esc(name)}</h1><p class="muted">Loading…</p>`;
   const k = shardKey(name);
   const [r, h] = await Promise.all([getJson(`api/r/${k}.json`), getJson(`api/h/${histKey(name)}.json`)]);
@@ -130,7 +130,7 @@ async function resource(name) {
 }
 
 function apiDocs() {
-  document.title = "API - FiveM Resource Stats";
+  document.title = "API - resourcestats";
   const base = location.href.split("#")[0].replace(/index\.html$/, "");
   view.innerHTML = `<h1>Free JSON API</h1>
   <p class="note">Free for anyone, with no key or sign-up. The files are static JSON on a CDN, so you can call them straight from a browser (CORS is open). The data refreshes every hour, a few minutes past the hour, so there's no point fetching more often than that.</p>

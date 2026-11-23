@@ -1,4 +1,4 @@
-// FiveM Resource Stats embed widget.
+// resourcestats embed widget (FiveM resource stats).
 // Usage: <span data-fivem-resource="ox_lib" data-show="servers|players|rank"></span>
 //        <script src="https://brandstationn.github.io/fivem-resource-stats/embed.js" async></script>
 (function () {
