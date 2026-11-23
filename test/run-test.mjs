@@ -20,9 +20,10 @@ const times = ["2026-11-23T22:05:00Z", "2026-11-23T22:40:00Z", "2026-11-23T23:05
 times.forEach((t, k) => {
   writeFileSync("/tmp/stream.bin", fakeStream(k));
   const env = { ...process.env, STREAM_FILE: "/tmp/stream.bin", NOW: t };
-  if (k) env.STATE_FILE = "/tmp/state.json.gz";
+  if (k) { env.STATE_FILE = "/tmp/state.json.gz"; env.CACHE_FILE = "/tmp/cache.json.gz"; }
   execFileSync("node", ["collector/collect.mjs"], { env, stdio: "inherit" });
   copyFileSync("dist/api/history.json.gz", "/tmp/state.json.gz");
+  copyFileSync("dist/api/servers.json.gz", "/tmp/cache.json.gz");
 });
 const st = JSON.parse(gunzipSync(readFileSync("/tmp/state.json.gz")));
 const sum = JSON.parse(readFileSync("dist/api/summary.json"));
@@ -37,3 +38,6 @@ assert(h.h.casino.length === 6, "casino has 3 hourly points");
 assert(!("rare_script_997" in st.res), "1-server resources get no history");
 assert(JSON.parse(readFileSync("dist/api/r/ra.json")).r.rare_script_997[0] === 1, "but still appear in current data");
 assert(sum.top[0][1] >= sum.top[1][1], "top sorted");
+assert(sum.covered === 2990, "every server has a known resource list");
+const cache = JSON.parse(gunzipSync(readFileSync("/tmp/cache.json.gz")));
+assert(Object.keys(cache.s).length === 2990 && cache.names.length < 20, "cache stores each name once");

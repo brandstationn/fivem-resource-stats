@@ -1,34 +1,43 @@
-// Hourly collector: downloads every FiveM server from the Cfx.re list, counts
-// servers + players per resource, updates history, and writes the static
-// site + JSON API into ./dist (published to GitHub Pages).
+// Hourly collector for FiveM resource stats.
+//
+// 1. Download the Cfx.re bulk server list (every server + its player count).
+//    The bulk list no longer contains resource names, so:
+// 2. Look up resource lists per server on Cfx.re, politely: new servers first,
+//    then the ones checked longest ago, so every server is re-checked about once
+//    a day. Results are cached between runs (api/servers.json.gz).
+// 3. Count servers + players per resource, update history, write site + API to ./dist.
 //
 // Env:
-//   SITE_URL     public URL of the live site (to load the previous history)
-//   STREAM_FILE  read the server list from a local file instead (tests)
-//   STATE_FILE   read previous history from a local .json.gz file (tests)
-//   NOW          override the current time, ISO string (tests)
+//   SITE_URL     public URL of the live site (previous history + cache are read from it)
+//   STREAM_FILE  tests: read the bulk list from a file; its embedded resource lists stand in for Cfx.re lookups
+//   STATE_FILE / CACHE_FILE  tests: previous history / cache from local .json.gz files
+//   NOW          tests: override the current time (ISO string)
 
 import { readFile, writeFile, mkdir, cp, rm } from "node:fs/promises";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { parseStream } from "./proto.mjs";
 import { shardKey, histKey } from "./keys.mjs";
 
-const HOURS = 168;        // hourly points kept (7 days)
-const DAYS = 90;          // daily peak points kept
-const MIN_HISTORY = 3;    // a resource gets history once it runs on this many servers
-const TOP_N = 5000;       // size of api/top.json
+const HOURS = 168;            // hourly points kept (7 days)
+const DAYS = 90;              // daily peak points kept
+const MIN_HISTORY = 3;        // a resource gets history once it runs on this many servers
+const TOP_N = 5000;           // size of api/top.json
+const RECHECK_HOURS = 24;     // each server's resource list is re-checked about this often
+const MAX_RATE = 5;           // max lookups per second to Cfx.re
+const LOOKUP_MINUTES = 30;    // stop looking up after this long; the rest continue next hour
 const OUT = "dist";
-const STREAM_URLS = [
-  "https://frontend.cfx-services.net/api/servers/streamRedir/",
-  "https://servers-frontend.fivem.net/api/servers/streamRedir/",
-];
+const API = "https://frontend.cfx-services.net/api/servers";
+const STREAM_URLS = [`${API}/streamRedir/`, "https://servers-frontend.fivem.net/api/servers/streamRedir/"];
 const UA = "fivem-resource-stats (+https://github.com/brandstationn/fivem-resource-stats)";
+const TEST = !!process.env.STREAM_FILE;
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const cleanNames = (list) => [...new Set(list.map((r) => String(r).trim().toLowerCase()).filter((n) => n && n.length <= 64))];
 
-// ---------- 1. download ----------
+// ---------- 1. bulk list ----------
 async function downloadStream() {
-  if (process.env.STREAM_FILE) return readFile(process.env.STREAM_FILE);
+  if (TEST) return readFile(process.env.STREAM_FILE);
   let lastErr;
   for (const url of STREAM_URLS) {
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -41,56 +50,112 @@ async function downloadStream() {
       } catch (e) {
         lastErr = new Error(`${url} attempt ${attempt}: ${e.message}`);
         console.warn(lastErr.message);
-        await new Promise((r) => setTimeout(r, 5000 * attempt));
+        await sleep(5000 * attempt);
       }
     }
   }
   throw lastErr;
 }
 
-// ---------- 2. aggregate ----------
-function aggregate(buf) {
-  const byName = new Map(); // lowercase name -> [servers, players]
-  const seen = new Set();
-  let servers = 0, players = 0;
+function readServers(buf) {
+  const servers = new Map(); // endpoint -> { clients, testResources }
+  let players = 0;
   const { count, bad } = parseStream(buf, (s) => {
-    if (!s.endpoint || seen.has(s.endpoint)) return;
-    seen.add(s.endpoint);
-    servers++; players += s.clients;
-    const unique = new Set();
-    for (const r of s.resources) {
-      const n = r.trim().toLowerCase();
-      if (n && n.length <= 64) unique.add(n);
-    }
-    for (const n of unique) {
-      const e = byName.get(n);
-      if (e) { e[0]++; e[1] += s.clients; } else byName.set(n, [1, s.clients]);
-    }
+    if (!s.endpoint || servers.has(s.endpoint)) return;
+    servers.set(s.endpoint, { clients: s.clients, testResources: s.resources });
+    players += s.clients;
   });
-  log(`parsed ${count} servers (${bad} unreadable), ${servers} unique, ${players} players, ${byName.size} resources`);
-  if (servers < 1000 && !process.env.STREAM_FILE) throw new Error(`Only ${servers} servers parsed - refusing to publish`);
-  return { byName, servers, players };
+  log(`bulk list: ${count} entries (${bad} unreadable), ${servers.size} unique servers, ${players} players`);
+  if (servers.size < 1000 && !TEST) throw new Error(`Only ${servers.size} servers parsed - refusing to publish`);
+  return { servers, players };
 }
 
-// ---------- 3. history ----------
-async function loadState() {
+// ---------- previous state (history + cache) from the live site ----------
+async function loadGz(file, envFile, what) {
   try {
     let gz;
-    if (process.env.STATE_FILE) gz = await readFile(process.env.STATE_FILE);
-    else if (process.env.SITE_URL) {
-      const res = await fetch(`${process.env.SITE_URL.replace(/\/$/, "")}/api/history.json.gz?t=${Date.now()}`, { headers: { "User-Agent": UA } });
-      if (res.status === 404) { log("no previous history (first run)"); return null; }
-      if (!res.ok) throw new Error(`history download HTTP ${res.status}`);
+    if (process.env[envFile]) gz = await readFile(process.env[envFile]);
+    else if (process.env.SITE_URL && !TEST) {
+      const res = await fetch(`${process.env.SITE_URL.replace(/\/$/, "")}/api/${file}?t=${Date.now()}`, { headers: { "User-Agent": UA } });
+      if (res.status === 404) { log(`no previous ${what} (first run)`); return null; }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       gz = Buffer.from(await res.arrayBuffer());
     } else return null;
-    const st = JSON.parse(gunzipSync(gz));
-    log(`loaded history: ${st.hours.length} hours, ${Object.keys(st.res).length} tracked resources`);
-    return st;
+    return JSON.parse(gunzipSync(gz));
   } catch (e) {
     if (e.code === "ENOENT") return null;
-    // Never wipe history because of a temporary error: fail the run, the old site stays up.
-    throw new Error(`Could not load previous history: ${e.message}`);
+    // Never wipe data because of a temporary error: fail the run, the old site stays up.
+    throw new Error(`Could not load previous ${what}: ${e.message}`);
   }
+}
+
+// cache file format: { names: [resource names], s: { endpoint: [checkedAtSec, nameIndex, nameIndex, ...] } }
+function unpackCache(c) {
+  const m = new Map();
+  if (c) for (const [ep, [at, ...idx]] of Object.entries(c.s)) m.set(ep, { at, res: idx.map((i) => c.names[i]) });
+  return m;
+}
+function packCache(m) {
+  const names = [], index = new Map(), s = {};
+  for (const [ep, { at, res }] of m) s[ep] = [at, ...res.map((n) => { if (!index.has(n)) { index.set(n, names.length); names.push(n); } return index.get(n); })];
+  return { names, s };
+}
+
+// ---------- 2. per-server resource lookups ----------
+async function lookupOne(endpoint, server) {
+  if (TEST) return { ok: true, res: cleanNames(server.testResources) };
+  const r = await fetch(`${API}/single/${encodeURIComponent(endpoint)}`, { headers: { "User-Agent": UA } });
+  if (r.status === 429) return { limited: true, wait: (+r.headers.get("retry-after") || 30) * 1000 };
+  if (r.status === 404) return { gone: true };
+  if (!r.ok) { await r.arrayBuffer().catch(() => {}); return { error: r.status }; }
+  const j = await r.json();
+  return { ok: true, res: cleanNames(j.Data?.resources || []) };
+}
+
+async function refreshCache(cache, servers, nowSec) {
+  for (const ep of cache.keys()) if (!servers.has(ep)) cache.delete(ep); // server left the list
+  const due = [...servers.keys()]
+    .filter((ep) => !cache.has(ep) || nowSec - cache.get(ep).at >= RECHECK_HOURS * 3600 - 1800)
+    .sort((a, b) => (cache.get(a)?.at ?? -1) - (cache.get(b)?.at ?? -1)); // never-checked first, then oldest
+  const deadline = Date.now() + LOOKUP_MINUTES * 60e3;
+  let i = 0, ok = 0, failed = 0, rate = MAX_RATE, pausedUntil = 0, limitedCount = 0;
+  const started = Date.now();
+  const worker = async () => {
+    while (i < due.length && Date.now() < deadline && limitedCount < 20) {
+      if (Date.now() < pausedUntil) { await sleep(pausedUntil - Date.now()); continue; }
+      const ep = due[i++];
+      const t0 = Date.now();
+      try {
+        const r = await lookupOne(ep, servers.get(ep));
+        if (r.ok) { cache.set(ep, { at: nowSec, res: r.res }); ok++; }
+        else if (r.limited) { // slow down and pause on rate limiting
+          limitedCount++; rate = Math.max(1, rate / 2); pausedUntil = Date.now() + r.wait; i--;
+          console.warn(`rate limited by Cfx.re, pausing ${r.wait / 1000}s, rate now ${rate}/s`);
+        } else failed++;
+      } catch { failed++; }
+      if (!TEST) await sleep(Math.max(0, 1000 * WORKERS / rate - (Date.now() - t0)));
+    }
+  };
+  const WORKERS = TEST ? 1 : 4;
+  await Promise.all(Array.from({ length: WORKERS }, worker));
+  log(`lookups: ${due.length} due, ${ok} updated, ${failed} failed, ${due.length - i} left for next run, ${((Date.now() - started) / 1000).toFixed(0)}s`);
+}
+
+// ---------- 3. aggregate ----------
+function aggregate(servers, players, cache) {
+  const byName = new Map(); // name -> [servers, players]
+  let covered = 0;
+  for (const [ep, { clients }] of servers) {
+    const c = cache.get(ep);
+    if (!c) continue;
+    covered++;
+    for (const n of c.res) {
+      const e = byName.get(n);
+      if (e) { e[0]++; e[1] += clients; } else byName.set(n, [1, clients]);
+    }
+  }
+  log(`${covered}/${servers.size} servers with known resources, ${byName.size} different resources`);
+  return { byName, servers: servers.size, players, covered };
 }
 
 function updateState(st, agg, nowSec) {
@@ -150,7 +215,7 @@ async function writeApi(agg, st, now) {
   await mkdir(`${OUT}/api/h`, { recursive: true });
 
   await writeJson("api/summary.json", {
-    updatedAt, servers: agg.servers, players: agg.players, resources: agg.byName.size,
+    updatedAt, servers: agg.servers, players: agg.players, resources: agg.byName.size, covered: agg.covered,
     top: ranked.slice(0, 100).map(([n, [s, p]]) => [n, s, p]),
     hourly: { t: st.hours, v: st.totals },
     daily: { d: st.days, v: st.dtotals },
@@ -183,11 +248,21 @@ async function writeApi(agg, st, now) {
 
 // ---------- main ----------
 const now = process.env.NOW ? new Date(process.env.NOW) : new Date();
-const [buf, prev] = await Promise.all([downloadStream(), loadState()]);
-const agg = aggregate(buf);
-const st = updateState(prev, agg, Math.floor(now / 1000));
+const nowSec = Math.floor(now / 1000);
+const [buf, prev, prevCache] = await Promise.all([
+  downloadStream(),
+  loadGz("history.json.gz", "STATE_FILE", "history"),
+  loadGz("servers.json.gz", "CACHE_FILE", "server cache"),
+]);
+const { servers, players } = readServers(buf);
+const cache = unpackCache(prevCache);
+await refreshCache(cache, servers, nowSec);
+const agg = aggregate(servers, players, cache);
+const st = updateState(prev, agg, nowSec);
 await rm(OUT, { recursive: true, force: true });
 await cp("site", OUT, { recursive: true });
 await writeFile(`${OUT}/.nojekyll`, "");
 await writeApi(agg, st, now);
-log("done");
+const cacheGz = gzipSync(JSON.stringify(packCache(cache)), { level: 9 });
+await writeFile(`${OUT}/api/servers.json.gz`, cacheGz);
+log(`servers.json.gz ${(cacheGz.length / 1e6).toFixed(2)} MB - done`);
