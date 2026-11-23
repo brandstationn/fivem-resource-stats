@@ -1,25 +1,49 @@
 name: Collect stats
 
+# Runs every hour. GitHub's own scheduler is best-effort (runs can be late or skipped),
+# so each run also queues the next one; that run waits until 5 minutes past the next hour.
+# The schedule below stays as a backup that restarts the chain if it ever breaks.
 on:
   schedule:
-    - cron: "4 * * * *"   # every hour at :04 (GitHub can start scheduled runs a few minutes late)
-  workflow_dispatch:       # "Run workflow" button in the Actions tab
+    - cron: "4 * * * *"
+  workflow_dispatch:
     inputs:
       lookup_minutes:
         description: "Minutes to spend looking up resource lists"
-        default: "50"
+        default: "45"
+      chained:
+        description: "Wait for the next hour before starting (set by the previous run)"
+        default: "false"
 
 permissions:
-  contents: write   # only used by the keep-alive step
+  contents: write   # keep-alive commit
   pages: write
   id-token: write
+  actions: write    # queue the next run
 
 concurrency:
   group: collect
   cancel-in-progress: false
 
 jobs:
+  wait:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Queue the next hourly run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run collect.yml -R "${{ github.repository }}" -f chained=true
+
+      - name: Wait until 5 minutes past the hour
+        if: inputs.chained == 'true'
+        run: |
+          now=$(date +%s); hour=$(( now / 3600 * 3600 ))
+          target=$(( hour + 300 )); [ $now -ge $(( hour + 1200 )) ] && target=$(( hour + 3600 + 300 ))
+          if [ $target -gt $now ]; then echo "waiting $(( target - now ))s"; sleep $(( target - now )); fi
+
   collect:
+    needs: wait
     runs-on: ubuntu-latest
     timeout-minutes: 58
     environment:
@@ -35,7 +59,7 @@ jobs:
       - name: Collect server list and build site + API
         run: node collector/collect.mjs
         env:
-          LOOKUP_MINUTES: ${{ inputs.lookup_minutes || '50' }}
+          LOOKUP_MINUTES: ${{ inputs.lookup_minutes || '45' }}
           SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
 
       - name: Site size (GitHub Pages limit is 1 GB)
@@ -49,7 +73,7 @@ jobs:
         uses: actions/deploy-pages@v4
 
       # GitHub pauses scheduled workflows in repos with no commits for 60 days.
-      # This adds an empty commit once a month so the hourly updates never stop.
+      # This adds an empty commit once a month so the backup schedule never stops.
       - name: Keep the schedule alive
         run: |
           last=$(git log -1 --format=%ct)
