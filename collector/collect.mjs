@@ -263,6 +263,9 @@ const st = updateState(prev, agg, nowSec);
 await rm(OUT, { recursive: true, force: true });
 await cp("site", OUT, { recursive: true });
 await writeFile(`${OUT}/.nojekyll`, "");
+// cache-busting: browsers must load this build's CSS/JS, never an older copy
+const html = await readFile(`${OUT}/index.html`, "utf8");
+await writeFile(`${OUT}/index.html`, html.replaceAll("__V__", String(nowSec)));
 await writeApi(agg, st, now);
 const cacheGz = gzipSync(JSON.stringify(packCache(cache)), { level: 9 });
 await writeFile(`${OUT}/api/servers.json.gz`, cacheGz);

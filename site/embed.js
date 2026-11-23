@@ -13,7 +13,7 @@
       var name = el.getAttribute("data-fivem-resource").trim().toLowerCase();
       var show = el.getAttribute("data-show") || "servers";
       var k = key(name);
-      shards[k] = shards[k] || fetch(base + "api/r/" + k + ".json").then(function (r) { return r.json(); });
+      shards[k] = shards[k] || fetch(base + "api/r/" + k + ".json?v=" + Math.floor(Date.now() / 3e5)).then(function (r) { return r.json(); });
       shards[k].then(function (d) {
         var v = d.r[name] || [0, 0, 0];
         var n = show === "players" ? v[1] : show === "rank" ? v[2] : v[0];

@@ -71,3 +71,5 @@ code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 pre code { background: none; padding: 0; }
 .note { color: var(--text-2); font-size: 14px; }
 footer { color: var(--muted); font-size: 13px; padding-top: 32px; padding-bottom: 32px; }
+.chart .empty { height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--muted); font-size: 13px; text-align: center; }
+.chart .empty b { color: var(--text); font-size: 26px; font-variant-numeric: tabular-nums; }

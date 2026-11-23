@@ -12,7 +12,10 @@ function histKey(name) {
   return (h & 0xfff).toString(16).padStart(3, "0");
 }
 const cache = new Map();
+let dataVersion = "";
 function getJson(path) {
+  const v = path === "api/summary.json" ? Math.floor(Date.now() / 3e5) : dataVersion;
+  path += `?v=${encodeURIComponent(v)}`;
   if (!cache.has(path)) cache.set(path, fetch(path).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).catch((e) => { cache.delete(path); if (String(e.message) === "404") return null; throw e; }));
   return cache.get(path);
 }
@@ -25,7 +28,7 @@ function lineChart(el, pts, { color, label, daily }) {
   el.classList.add("chart");
   const draw = () => {
     const W = el.clientWidth || 600, H = 200, L = 44, R = 8, T = 10, B = 24;
-    if (!pts.length) { el.innerHTML = `<p class="muted">No history yet - it builds up hour by hour.</p>`; return; }
+    if (pts.length < 2) { el.innerHTML = `<div class="empty"><b>${pts.length ? fmt(pts[0].y) : "-"}</b><span>The chart fills in as data comes in, one point per ${daily ? "day" : "hour"}.</span></div>`; return; }
     const xs = pts.map((p) => p.x), x0 = xs[0], x1 = xs[xs.length - 1] === x0 ? x0 + 1 : xs[xs.length - 1];
     const ymax = niceMax(Math.max(...pts.map((p) => p.y)) || 1);
     const X = (x) => L + ((x - x0) / (x1 - x0)) * (W - L - R), Y = (y) => T + (1 - y / ymax) * (H - T - B);
@@ -86,7 +89,7 @@ async function home() {
   document.title = "resourcestats - FiveM servers & players per resource";
   const s = summary;
   view.innerHTML = `${tiles([["Servers online", fmt(s.servers)], ["Players online", fmt(s.players)], ["Different resources", fmt(s.resources)], ["Last update", ago(s.updatedAt)]])}
-    ${s.covered < s.servers * 0.97 ? `<p class="note">Still checking servers: resource lists are known for ${fmt(s.covered)} of ${fmt(s.servers)} servers so far (${Math.round(s.covered / s.servers * 100)}%). Servers are checked busiest first, so the biggest servers are already counted. The numbers will rise over the next day or so until every server has been checked.</p>` : ""}
+    ${s.covered < s.servers * 0.97 ? `<p class="note">Still checking servers: resource lists are known for ${fmt(s.covered)} of ${fmt(s.servers)} servers so far (${(s.covered / s.servers * 100).toFixed(s.covered / s.servers < 0.1 ? 1 : 0)}%). Servers are checked busiest first, so the biggest servers are already counted. The numbers will rise over the next day or so until every server has been checked.</p>` : ""}
     <div id="hist"></div><h2>Most used resources</h2><div id="tbl"></div>`;
   chartPair($("#hist"), { h: fromPairs(s.hourly.t, s.hourly.v), d: fromPairs(s.daily.d, s.daily.v, true) });
   let rows = s.top, page = 0; const per = 50;
@@ -208,6 +211,7 @@ sug.addEventListener("click", () => { sug.hidden = true; q.value = ""; });
 (async () => {
   try { summary = await getJson("api/summary.json"); }
   catch { view.innerHTML = `<p class="note">The first data collection hasn't finished yet. Check back in a few minutes.</p>`; return; }
+  dataVersion = summary.updatedAt;
   $("#updated").textContent = `Last update: ${new Date(summary.updatedAt).toLocaleString()}.`;
   window.addEventListener("hashchange", route);
   route();
