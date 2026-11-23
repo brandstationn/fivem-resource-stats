@@ -113,6 +113,7 @@ async function resource(name) {
   view.innerHTML = `<h1>${esc(name)}</h1><p class="muted">Loading…</p>`;
   const k = shardKey(name);
   const [r, h] = await Promise.all([getJson(`api/r/${k}.json`), getJson(`api/h/${histKey(name)}.json`)]);
+  const serverList = getJson(`api/s/${histKey(name)}.json`).catch(() => null); // loads while the page renders
   const cur = r?.r[name];
   if (!cur) {
     view.innerHTML = `<h1>${esc(name)}</h1><p class="note">No server is running a resource with this exact name right now. Resource names are the folder names servers use, so check the spelling or try the search.</p>`;
@@ -123,6 +124,7 @@ async function resource(name) {
   view.innerHTML = `<h1>${esc(name)}</h1>
     ${tiles([["Servers running it", fmt(sv)], ["Players on those servers", fmt(p)], ["Rank", "#" + fmt(rank)], ["Share of all servers", (sv / summary.servers * 100).toFixed(2) + "%"]])}
     <div id="hist"></div>
+    <div id="srvlist"></div>
     <h2>Use these numbers on your site</h2>
     <p class="note">Paste this where the numbers should appear. It updates by itself:</p>
     <pre><code>${esc(`<span data-fivem-resource="${name}" data-show="servers"></span> servers · <span data-fivem-resource="${name}" data-show="players"></span> players\n<script src="${site}embed.js" async></script>`)}</code></pre>
@@ -130,6 +132,26 @@ async function resource(name) {
   const hh = h?.h[name], dd = h?.dd[name];
   if (hh) chartPair($("#hist"), { h: fromFlat(h.t, hh), d: dd ? fromFlat(h.d, dd, true) : [] });
   else $("#hist").innerHTML = `<p class="note">History is kept for resources running on 3 or more servers.</p>`;
+  serverList.then((sl) => { if (sl && view.contains($("#srvlist"))) renderServers($("#srvlist"), name, sv, sl); });
+}
+
+function renderServers(el, name, total, sl) {
+  const eps = sl.r[name] || [];
+  if (!eps.length) return;
+  const per = 25; let shown = per;
+  const draw = () => {
+    const rows = eps.slice(0, shown).map((ep, i) => {
+      const [hn, pl, mx] = sl.srv[ep] || ["(unknown)", 0, 0];
+      return `<tr><td class="rank">${i + 1}</td><td><a href="https://servers.fivem.net/servers/detail/${encodeURIComponent(ep)}" target="_blank" rel="noopener nofollow">${esc(hn || "(no name)")}</a></td><td class="num">${fmt(pl)}${mx ? ` <span class="muted">/ ${fmt(mx)}</span>` : ""}</td></tr>`;
+    }).join("");
+    el.innerHTML = `<div class="row"><h2>Servers using ${esc(name)}</h2><span class="muted">${fmt(total)} server${total === 1 ? "" : "s"}</span></div>
+      <table><thead><tr><th>#</th><th>Server</th><th class="num">Players</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="pager">${shown < eps.length ? `<button data-more>Show more</button>` : ""}
+      ${total > eps.length ? `<span class="muted">Showing the ${fmt(eps.length)} busiest of ${fmt(total)} servers.</span>` : ""}</div>`;
+    const more = el.querySelector("[data-more]");
+    if (more) more.onclick = () => { shown += 25; draw(); };
+  };
+  draw();
 }
 
 function apiDocs() {
@@ -143,6 +165,7 @@ function apiDocs() {
   <tr><td><code>api/top.json</code></td><td>Top 5,000 resources: <code>[name, servers, players]</code>, sorted by servers.</td></tr>
   <tr><td><code>api/r/{xx}.json</code></td><td>Current numbers for <b>every</b> resource whose name starts with <code>xx</code>: <code>{ r: { name: [servers, players, rank] } }</code></td></tr>
   <tr><td><code>api/h/{hhh}.json</code></td><td>History (resources on 3+ servers): <code>t</code> = hourly unix times, <code>h[name]</code> = flat <code>[servers, players, servers, players, …]</code> per hour (7 days); <code>d</code> = dates, <code>dd[name]</code> = same format, daily peak (90 days).</td></tr>
+  <tr><td><code>api/s/{hhh}.json</code></td><td>Servers running each resource (up to 100, busiest first): <code>r[name]</code> = list of server IDs, <code>srv[id]</code> = <code>[name, players, maxPlayers]</code>. The ID is the cfx.re join code (<code>servers.fivem.net/servers/detail/{id}</code>).</td></tr>
   <tr><td><code>api/all.json.gz</code></td><td>Everything current in one gzip file.</td></tr>
   <tr><td><code>api/history.json.gz</code></td><td>The full history database in one gzip file.</td></tr>
   </tbody></table>

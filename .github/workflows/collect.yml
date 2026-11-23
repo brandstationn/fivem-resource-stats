@@ -38,6 +38,9 @@ jobs:
           LOOKUP_MINUTES: ${{ inputs.lookup_minutes || '50' }}
           SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
 
+      - name: Site size (GitHub Pages limit is 1 GB)
+        run: du -sh dist dist/api/* | sort -h | tail -8
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

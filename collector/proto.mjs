@@ -22,6 +22,11 @@ function parseData(buf, pos, end, out) {
     let key; [key, pos] = varint(buf, pos);
     const field = Math.floor(key / 8), wire = key & 7;
     if (field === 2 && wire === 0) { [out.clients, pos] = varint(buf, pos); }
+    else if (field === 1 && wire === 0) { [out.max, pos] = varint(buf, pos); }
+    else if (field === 4 && wire === 2) {
+      let len; [len, pos] = varint(buf, pos);
+      out.hostname = buf.toString("utf8", pos, pos + len); pos += len;
+    }
     else if (field === 18 && wire === 2) {
       let len; [len, pos] = varint(buf, pos);
       out.connect.push(buf.toString("utf8", pos, pos + len)); pos += len;
@@ -33,7 +38,7 @@ function parseData(buf, pos, end, out) {
 }
 
 function parseServer(buf, pos, end) {
-  const s = { endpoint: "", clients: 0, resources: [], connect: [] };
+  const s = { endpoint: "", clients: 0, max: 0, hostname: "", resources: [], connect: [] };
   while (pos < end) {
     let key; [key, pos] = varint(buf, pos);
     const field = Math.floor(key / 8), wire = key & 7;

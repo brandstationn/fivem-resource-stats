@@ -31,6 +31,7 @@ const LOOKUP_MINUTES = +process.env.LOOKUP_MINUTES || 50; // total lookup time p
 const DIRECT_CONCURRENCY = 150; // parallel direct requests (each to a different server IP)
 const DIRECT_TIMEOUT_MS = 4000;
 const DIRECT_MINUTES = 15;    // time budget for direct requests per run
+const SERVERS_PER_RESOURCE = 100; // servers listed on a resource page (busiest first)
 const OUT = "dist";
 const API = "https://frontend.cfx-services.net/api/servers";
 const STREAM_URLS = [`${API}/streamRedir/`, "https://servers-frontend.fivem.net/api/servers/streamRedir/"];
@@ -39,6 +40,8 @@ const TEST = !!process.env.STREAM_FILE;
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// FiveM hostnames contain colour codes (^1, ~r~) and padding; keep plain text, max 80 characters
+const cleanHostname = (h) => String(h || "").replace(/\^\d/g, "").replace(/~[a-zA-Z]~/g, "").replace(/[\u0000-\u001f]/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
 const cleanNames = (list) => [...new Set(list.map((r) => String(r).trim().toLowerCase()).filter((n) => n && n.length <= 64))];
 
 // ---------- 1. bulk list ----------
@@ -68,7 +71,7 @@ function readServers(buf) {
   let players = 0;
   const { count, bad } = parseStream(buf, (s) => {
     if (!s.endpoint || servers.has(s.endpoint)) return;
-    servers.set(s.endpoint, { clients: s.clients, testResources: s.resources, connect: s.connect });
+    servers.set(s.endpoint, { clients: s.clients, max: s.max, name: cleanHostname(s.hostname), testResources: s.resources, connect: s.connect });
     players += s.clients;
   });
   log(`bulk list: ${count} entries (${bad} unreadable), ${servers.size} unique servers, ${players} players`);
@@ -220,7 +223,7 @@ async function refreshCache(cache, servers, nowSec) {
 
 // ---------- 3. aggregate ----------
 function aggregate(servers, players, cache) {
-  const byName = new Map(); // name -> [servers, players]
+  const byName = new Map(); // name -> [servers, players, [endpoints]]
   let covered = 0;
   for (const [ep, { clients }] of servers) {
     const c = cache.m.get(ep);
@@ -228,11 +231,11 @@ function aggregate(servers, players, cache) {
     covered++;
     for (const n of c.res) {
       const e = byName.get(n);
-      if (e) { e[0]++; e[1] += clients; } else byName.set(n, [1, clients]);
+      if (e) { e[0]++; e[1] += clients; e[2].push(ep); } else byName.set(n, [1, clients, [ep]]);
     }
   }
   log(`${covered}/${servers.size} servers with known resources, ${byName.size} different resources`);
-  return { byName, servers: servers.size, players, covered };
+  return { byName, servers: servers.size, players, covered, serverInfo: servers };
 }
 
 function updateState(st, agg, nowSec) {
@@ -320,6 +323,22 @@ async function writeApi(agg, st, now) {
   await writeFile(`${OUT}/api/all.json.gz`, gzipSync(JSON.stringify({ updatedAt, r: all }), { level: 9 }));
   const stateGz = gzipSync(JSON.stringify(st), { level: 9 });
   await writeFile(`${OUT}/api/history.json.gz`, stateGz);
+  // which servers run each resource (busiest first), bucketed like history; server details stored once per file
+  const sshards = new Map();
+  for (const [n, [, , eps]] of agg.byName) {
+    const k = histKey(n);
+    if (!sshards.has(k)) sshards.set(k, { srv: {}, r: {} });
+    const b = sshards.get(k);
+    const top = eps.length > SERVERS_PER_RESOURCE
+      ? [...eps].sort((a, b2) => agg.serverInfo.get(b2).clients - agg.serverInfo.get(a).clients).slice(0, SERVERS_PER_RESOURCE)
+      : [...eps].sort((a, b2) => agg.serverInfo.get(b2).clients - agg.serverInfo.get(a).clients);
+    b.r[n] = top;
+    for (const ep of top) if (!b.srv[ep]) { const i = agg.serverInfo.get(ep); b.srv[ep] = [i.name, i.clients, i.max]; }
+  }
+  await mkdir(`${OUT}/api/s`, { recursive: true });
+  let sBytes = 0;
+  for (const [k, b] of sshards) { const j = JSON.stringify({ updatedAt, ...b }); sBytes += j.length; await writeFile(`${OUT}/api/s/${k}.json`, j); }
+  log(`server lists: ${sshards.size} files, ${(sBytes / 1e6).toFixed(1)} MB total`);
   log(`wrote ${shards.size} shards, ${hshards.size} history files, ${Object.keys(st.res).length} resources with history, history.json.gz ${(stateGz.length / 1e6).toFixed(2)} MB`);
 }
 

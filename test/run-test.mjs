@@ -55,4 +55,7 @@ assert(JSON.parse(readFileSync("dist/api/r/di.json")).r.direct_only[0] === 5, "p
 assert(directHits === 5, "each direct server asked once, private addresses never contacted");
 assert(JSON.parse(readFileSync("dist/api/r/cf.json")).r.cfx_only[0] === 2, "private-address servers fell back to Cfx.re");
 const cache = JSON.parse(gunzipSync(readFileSync("/tmp/cache.json.gz")));
+const sl = JSON.parse(readFileSync("dist/api/s/" + histKey("casino") + ".json"));
+assert(sl.r.casino.length === 100 && sl.srv[sl.r.casino[0]][0] === "Test server", "server list capped at 100, with names");
+assert(sl.srv[sl.r.casino[0]][1] >= sl.srv[sl.r.casino[99]][1], "server list sorted busiest first");
 assert(Object.keys(cache.s).length === 2997 && cache.names.length < 20, "cache stores each name once");
