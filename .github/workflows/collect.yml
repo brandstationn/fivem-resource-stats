@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: "4 * * * *"   # every hour at :04 (GitHub can start scheduled runs a few minutes late)
   workflow_dispatch:       # "Run workflow" button in the Actions tab
+    inputs:
+      lookup_minutes:
+        description: "Minutes to spend looking up resource lists"
+        default: "30"
 
 permissions:
   contents: write   # only used by the keep-alive step
@@ -31,6 +35,7 @@ jobs:
       - name: Collect server list and build site + API
         run: node collector/collect.mjs
         env:
+          LOOKUP_MINUTES: ${{ inputs.lookup_minutes || '30' }}
           SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
 
       - uses: actions/upload-pages-artifact@v3
