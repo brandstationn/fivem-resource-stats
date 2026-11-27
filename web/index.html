@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>resourcestats - FiveM servers & players per resource</title>
+    <meta name="description" content="Free, hourly-updated stats on how many FiveM servers run each resource and how many players are on them. Embed live numbers on your FiveM store. Open JSON API." />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <script>
+      // Pick the theme before first paint: saved choice, else the system setting.
+      ;(function () {
+        var t = localStorage.getItem("theme")
+        if (t === "dark" || (!t && matchMedia("(prefers-color-scheme: dark)").matches)) document.documentElement.classList.add("dark")
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

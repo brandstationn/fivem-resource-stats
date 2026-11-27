@@ -34,10 +34,14 @@ Free, open stats on how many FiveM servers run each resource and how many player
 
 ## Running it locally
 
+The website is in `web/` (Vite + React + Tailwind + shadcn/ui). It is built into `web/dist`, and the collector copies that into `dist/`.
+
 ```bash
-node test/run-test.mjs        # fake data, checks the counting
-node collector/collect.mjs    # real data -> dist/
-npx serve dist                # look at the site
+cd web && npm ci && npm run dev   # the site, using live data from the published API
+cd web && npm run build           # build the site -> web/dist
+node test/run-test.mjs            # fake data, checks the counting
+node collector/collect.mjs        # real data -> dist/ (needs web/dist)
+npx serve dist                    # look at the full build
 ```
 
 ## Settings

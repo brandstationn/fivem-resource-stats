@@ -59,3 +59,8 @@ const sl = JSON.parse(readFileSync("dist/api/s/" + histKey("casino") + ".json"))
 assert(sl.r.casino.length === 100 && sl.srv[sl.r.casino[0]][0] === "Test server", "server list capped at 100, with names");
 assert(sl.srv[sl.r.casino[0]][1] >= sl.srv[sl.r.casino[99]][1], "server list sorted busiest first");
 assert(Object.keys(cache.s).length === 2997 && cache.names.length < 20, "cache stores each name once");
+const idx = JSON.parse(readFileSync("dist/api/servers.json")).s;
+assert(idx.length === 2997 && idx[0][2] >= idx[idx.length - 1][2], "server index lists every server, busiest first");
+const [ep0, , , , n0] = idx.find((s) => s[0] === "srv10");
+const sv = JSON.parse(readFileSync("dist/api/sv/" + histKey(ep0) + ".json")).srv[ep0];
+assert(sv[3].includes("casino") && sv[3].length === n0, "server details include its resource list");

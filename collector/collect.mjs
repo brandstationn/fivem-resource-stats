@@ -15,6 +15,7 @@
 //   NOW          tests: override the current time (ISO string)
 
 import { readFile, writeFile, mkdir, cp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { isIP } from "node:net";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { parseStream } from "./proto.mjs";
@@ -33,6 +34,7 @@ const DIRECT_TIMEOUT_MS = 4000;
 const DIRECT_MINUTES = 15;    // time budget for direct requests per run
 const SERVERS_PER_RESOURCE = 100; // servers listed on a resource page (busiest first)
 const OUT = "dist";
+const SITE = "web/dist";      // the website, built beforehand from web/ (cd web && npm ci && npm run build)
 const API = "https://frontend.cfx-services.net/api/servers";
 const STREAM_URLS = [`${API}/streamRedir/`, "https://servers-frontend.fivem.net/api/servers/streamRedir/"];
 const UA = "fivem-resource-stats (+https://github.com/brandstationn/fivem-resource-stats)";
@@ -224,18 +226,20 @@ async function refreshCache(cache, servers, nowSec) {
 // ---------- 3. aggregate ----------
 function aggregate(servers, players, cache) {
   const byName = new Map(); // name -> [servers, players, [endpoints]]
+  const serverRes = new Map(); // endpoint -> resource names (servers with a known list only)
   let covered = 0;
   for (const [ep, { clients }] of servers) {
     const c = cache.m.get(ep);
     if (!c) continue;
     covered++;
+    serverRes.set(ep, c.res);
     for (const n of c.res) {
       const e = byName.get(n);
       if (e) { e[0]++; e[1] += clients; e[2].push(ep); } else byName.set(n, [1, clients, [ep]]);
     }
   }
   log(`${covered}/${servers.size} servers with known resources, ${byName.size} different resources`);
-  return { byName, servers: servers.size, players, covered, serverInfo: servers };
+  return { byName, servers: servers.size, players, covered, serverInfo: servers, serverRes };
 }
 
 function updateState(st, agg, nowSec) {
@@ -339,6 +343,24 @@ async function writeApi(agg, st, now) {
   let sBytes = 0;
   for (const [k, b] of sshards) { const j = JSON.stringify({ updatedAt, ...b }); sBytes += j.length; await writeFile(`${OUT}/api/s/${k}.json`, j); }
   log(`server lists: ${sshards.size} files, ${(sBytes / 1e6).toFixed(1)} MB total`);
+
+  // every server (for server search), busiest first: [id, name, players, maxPlayers, resources (-1 = unknown)]
+  const byPlayers = [...agg.serverInfo].sort((a, b) => b[1].clients - a[1].clients);
+  await writeJson("api/servers.json", {
+    updatedAt,
+    s: byPlayers.map(([ep, i]) => [ep, i.name, i.clients, i.max, agg.serverRes.get(ep)?.length ?? -1]),
+  });
+  // each server's details + resource list, bucketed by hash of the server ID
+  const vshards = new Map();
+  for (const [ep, i] of byPlayers) {
+    const k = histKey(ep);
+    if (!vshards.has(k)) vshards.set(k, {});
+    vshards.get(k)[ep] = [i.name, i.clients, i.max, agg.serverRes.get(ep) ?? null];
+  }
+  await mkdir(`${OUT}/api/sv`, { recursive: true });
+  let vBytes = 0;
+  for (const [k, srv] of vshards) { const j = JSON.stringify({ updatedAt, srv }); vBytes += j.length; await writeFile(`${OUT}/api/sv/${k}.json`, j); }
+  log(`server details: ${vshards.size} files, ${(vBytes / 1e6).toFixed(1)} MB total`);
   log(`wrote ${shards.size} shards, ${hshards.size} history files, ${Object.keys(st.res).length} resources with history, history.json.gz ${(stateGz.length / 1e6).toFixed(2)} MB`);
 }
 
@@ -356,11 +378,10 @@ await refreshCache(cache, servers, nowSec);
 const agg = aggregate(servers, players, cache);
 const st = updateState(prev, agg, nowSec);
 await rm(OUT, { recursive: true, force: true });
-await cp("site", OUT, { recursive: true });
+if (existsSync(SITE)) await cp(SITE, OUT, { recursive: true }); // asset names are content-hashed by Vite
+else if (TEST) await mkdir(OUT, { recursive: true });
+else throw new Error(`${SITE} not found: build the website first (cd web && npm ci && npm run build)`);
 await writeFile(`${OUT}/.nojekyll`, "");
-// cache-busting: browsers must load this build's CSS/JS, never an older copy
-const html = await readFile(`${OUT}/index.html`, "utf8");
-await writeFile(`${OUT}/index.html`, html.replaceAll("__V__", String(nowSec)));
 await writeApi(agg, st, now);
 const cacheGz = gzipSync(JSON.stringify(packCache(cache)), { level: 9 });
 await writeFile(`${OUT}/api/servers.json.gz`, cacheGz);
